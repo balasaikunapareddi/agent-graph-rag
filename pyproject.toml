@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-graph-rag"
+version = "0.1.0"
+description = "GraphRAG agent in the spirit of Docling Graph: documents become validated Pydantic entities in a directed knowledge graph with provenance to chunk and page, so multi-hop questions get answered by traversal — with a plain chunk-RAG baseline on the same questions to show the difference."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "litellm",
+    "networkx",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+agent-graph-rag = "agent_graph_rag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
