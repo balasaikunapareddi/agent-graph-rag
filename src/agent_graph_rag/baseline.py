@@ -74,9 +74,19 @@ class PlainChunkRAG:
             if keyword in q:
                 m = re.search(pattern, text)
                 if m:
+                    # The returned text holds ONE extracted fact. It is only
+                    # a complete answer when the question asked for exactly
+                    # that one fact: a multi-intent question (catalyst AND
+                    # yield) or a ranking question (lowest/highest IC50,
+                    # which needs every compound's value) is partial even
+                    # when its one fact is in the top chunk.
+                    intents = [kw for kw, _ in patterns if kw in q]
+                    needs_ranking = ("ic50" in q
+                                     and ("lowest" in q or "highest" in q))
+                    complete = len(intents) == 1 and not needs_ranking
                     return BaselineAnswer(
                         f"From the top retrieved chunk ({top_chunk.chunk_id}): "
-                        + m.group(0), chunk_ids, complete=True)
+                        + m.group(0), chunk_ids, complete=complete)
         # No extractable fact in the top chunk: report what it does say.
         skip = ("#", "Date:", "Researcher:", "Method:", "Assay:", "Project:")
         first_line = next((ln.strip() for ln in text.splitlines()

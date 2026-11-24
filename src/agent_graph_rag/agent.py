@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .baseline import BaselineAnswer, PlainChunkRAG
 from .chunking import Chunk, load_chunks
-from .extractor import BaseExtractor, LLMExtractor, StubExtractor
+from .extractor import DEFAULT_MODEL, BaseExtractor, LLMExtractor, StubExtractor
 from .graph import GraphPath, KnowledgeGraph
 from .prompts import ANSWER_SYSTEM_PROMPT
 from .schema import EntityType
@@ -26,6 +26,18 @@ from .schema import EntityType
 REACTION_RE = re.compile(r"\b(R-\d+)\b")
 COMPOUND_RE = re.compile(r"\b([A-Z]{2,4}-\d+)\b")
 ENZYME_RE = re.compile(r"\b([A-Z][a-z]+-\d+)\b")
+
+def _parse_number(value: object) -> float | None:
+    """Float value of a stored IC50, or None if it is not numeric.
+
+    LLM-extracted values are strings and may be non-numeric (">1000",
+    "n/a"); ranking must skip those instead of crashing the answer.
+    """
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
 
 DEMO_QUESTIONS: list[dict] = [
     {"question": "Which compound was produced by reaction R-14, and what "
@@ -130,11 +142,13 @@ class GraphRAGAgent:
             enzyme = enzymes[0] if enzymes else "Kinase-7"
             tested = [t for t in self.graph.compounds_tested_against(enzyme)
                       if t["ic50_nM"]]
-            if not tested:
+            ranked = [(t, _parse_number(t["ic50_nM"])) for t in tested]
+            ranked = [(t, v) for t, v in ranked if v is not None]
+            if not ranked:
                 return GraphAnswer("I cannot answer that from the documents provided.",
                                    complete=False)
-            key = lambda t: float(str(t["ic50_nM"]).replace(",", ""))
-            best = min(tested, key=key) if "lowest" in q else max(tested, key=key)
+            best, _value = (min(ranked, key=lambda tv: tv[1])
+                            if "lowest" in q else max(ranked, key=lambda tv: tv[1]))
             compound = best["compound"]
             paths = self.graph.find_paths(compound, enzyme)
             producing = self.graph.neighbors(compound, direction="in")
@@ -180,7 +194,8 @@ class GraphRAGAgent:
             prop = self.graph.property_of(compound, "logP")
             return self._property_answer(question, compound, prop, "logP", "", paths)
         if "ic50" in q:
-            prop = self.graph.property_of(compound, "IC50")
+            enzyme = enzymes[0] if enzymes else None
+            prop = self.graph.property_of(compound, "IC50", target=enzyme)
             return self._property_answer(question, compound, prop,
                                          "IC50", "nM", paths)
         if "stability" in q or "stable" in q:
@@ -226,33 +241,41 @@ class GraphRAGAgent:
             return GraphAnswer("I cannot answer that from the documents provided.",
                                complete=False)
         paths = paths + self.graph.find_paths(compound, prop["name"])
-        value = prop.get("value", "")
-        text = f"{compound} has {kind} {value} {unit}".strip() + "."
+        value = " ".join(p for p in (str(prop.get("value", "")), unit) if p)
+        text = f"{compound} has {kind} {value}."
         if "produced by reaction" in question.lower() or "reaction" in question.lower():
             reaction = next((s for s, r in
                              self.graph.neighbors(compound, direction="in")
                              if r == "PRODUCES"), None)
             if reaction:
                 text = (f"Reaction {reaction} produced compound {compound}, "
-                        f"and {compound} has {kind} {value} {unit}.".strip())
+                        f"and {compound} has {kind} {value}.")
         return GraphAnswer(text, paths=paths)
 
     def _llm_synthesize(self, question: str, result: GraphAnswer) -> str:
-        """LLM may only rephrase the traversed paths — never add facts."""
+        """LLM may only rephrase the traversed paths — never add facts.
+
+        A failed rephrase must not destroy a good deterministic answer:
+        any API error falls back to the traversed text.
+        """
         import litellm
 
-        model = self.model or LLMExtractor.DEFAULT_MODEL
+        model = self.model or DEFAULT_MODEL
         paths_text = "\n".join(p.render() for p in result.paths)
-        resp = litellm.completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Question: {question}\n\n"
-                 f"Graph paths:\n{paths_text}\n\n"
-                 f"Deterministic answer: {result.text}"},
-            ],
-        )
-        text = (resp.choices[0].message.content or "").strip()
+        try:
+            resp = litellm.completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Question: {question}\n\n"
+                     f"Graph paths:\n{paths_text}\n\n"
+                     f"Deterministic answer: {result.text}"},
+                ],
+                timeout=120,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 - synthesis is cosmetic; keep the real answer
+            return result.text
         return text or result.text
 
     # -- comparison ------------------------------------------------------

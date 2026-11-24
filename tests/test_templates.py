@@ -45,3 +45,24 @@ def test_generated_model_validates_an_entity():
     exec(code, namespace)  # noqa: S102 - generated from our own template
     compound = namespace["AutoCompound"](name="AZT-101")
     assert compound.name == "AZT-101" and compound.type == "Compound"
+
+
+def test_validate_template_code_returns_false_for_bad_code():
+    assert validate_template_code("this is not python !!!") is False
+    assert validate_template_code("x = 1") is False  # compiles, no model
+
+
+def test_generated_code_sanitizes_attribute_names():
+    # LLM-derived attribute keys ("melting point", "class", "yield-pct")
+    # are not Python identifiers; the generated code must still compile,
+    # and colliding keys must not silently overwrite each other.
+    template = {"entity_types": {"Compound": {"attributes": [
+        "melting point", "class", "yield-pct", "yield_pct"]}},
+        "relationship_types": {}}
+    code = template_to_pydantic_code(template)
+    assert validate_template_code(code)
+    namespace: dict = {}
+    exec(code, namespace)  # noqa: S102 - generated from our own template
+    model = namespace["AutoCompound"]
+    fields = set(model.model_fields)
+    assert {"melting_point", "class_", "yield_pct", "yield_pct_2"} <= fields

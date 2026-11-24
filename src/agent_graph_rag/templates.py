@@ -11,6 +11,9 @@ it on new example docs produces a new template.
 
 from __future__ import annotations
 
+import keyword
+import re
+
 from .chunking import Chunk
 from .extractor import BaseExtractor
 from .schema import EntityType, RelationshipType
@@ -47,6 +50,28 @@ def _type_of(extraction, name: str) -> str:
     return "Unknown"
 
 
+def _safe_ident(name: str, used: set[str] | None = None) -> str:
+    """A valid, unique Python identifier for an LLM-derived attribute key.
+
+    Attribute keys come from extraction ("melting point", "class",
+    "yield-pct") and are not identifiers; emitting them verbatim makes
+    the generated template uncompilable. Sanitise, and de-duplicate
+    ("yield-pct" and "yield_pct" would otherwise collide).
+    """
+    ident = re.sub(r"\W", "_", str(name))
+    if not ident or ident[0].isdigit():
+        ident = "_" + ident
+    if keyword.iskeyword(ident):
+        ident += "_"
+    if used is not None:
+        base, i = ident, 2
+        while ident in used:
+            ident = f"{base}_{i}"
+            i += 1
+        used.add(ident)
+    return ident
+
+
 def template_to_pydantic_code(template: dict, class_prefix: str = "Auto") -> str:
     """Render the template as importable Pydantic source code."""
     lines = [
@@ -61,12 +86,13 @@ def template_to_pydantic_code(template: dict, class_prefix: str = "Auto") -> str
         "",
     ]
     for type_name, spec in sorted(template["entity_types"].items()):
-        cls = f"{class_prefix}{type_name}"
+        cls = f"{class_prefix}{_safe_ident(type_name)}"
         lines.append(f"class {cls}(BaseModel):")
         lines.append(f'    type: str = Field(default="{type_name}")')
         lines.append("    name: str")
+        used: set[str] = set()
         for attr in spec["attributes"]:
-            lines.append(f"    {attr}: str = ''")
+            lines.append(f"    {_safe_ident(attr, used)}: str = ''")
         lines.append("")
     lines.append(f"class {class_prefix}Relationship(BaseModel):")
     lines.append("    source: str")
@@ -78,10 +104,17 @@ def template_to_pydantic_code(template: dict, class_prefix: str = "Auto") -> str
 
 
 def validate_template_code(code: str) -> bool:
-    """The generated code must compile and define at least one model."""
+    """The generated code must compile and define at least one model.
+
+    Returns False (rather than raising) for code that does not compile
+    or fails to execute, so callers can treat it as a validation verdict.
+    """
     namespace: dict = {}
-    compile(code, "<auto-template>", "exec")
-    exec(code, namespace)  # noqa: S102 - generated from our own template only
+    try:
+        compile(code, "<auto-template>", "exec")
+        exec(code, namespace)  # noqa: S102 - generated from our own template only
+    except Exception:  # noqa: BLE001 - any failure means "not valid"
+        return False
     return any(isinstance(v, type) and issubclass(v, _BaseModel)
                for v in namespace.values())
 

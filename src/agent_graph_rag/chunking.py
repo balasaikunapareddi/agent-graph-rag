@@ -56,6 +56,16 @@ def chunk_document(doc_id: str, text: str) -> list[Chunk]:
             segments.insert(0, (1, pre))
     if not segments and pre:
         segments.append((1, pre))
+    pages = [page for page, _ in segments]
+    if any(page < 1 for page in pages):
+        raise ValueError(
+            f"Document {doc_id!r} has a page marker below 1 "
+            "(pages are 1-based; a '--- Page 0 ---' marker would stamp "
+            "provenance Pydantic refuses)")
+    if len(set(pages)) != len(pages):
+        raise ValueError(
+            f"Document {doc_id!r} repeats a page number; chunk ids "
+            "(doc:pN) would collide and provenance would be ambiguous")
     return [Chunk(doc_id, f"{doc_id}:p{page}", page, body)
             for page, body in segments]
 
@@ -63,9 +73,14 @@ def chunk_document(doc_id: str, text: str) -> list[Chunk]:
 def load_documents(data_dir: str | Path) -> list[Document]:
     """Load every ``*.md`` file in ``data_dir``, sorted by filename."""
     data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        # Fail loudly: silently returning [] would build an empty graph
+        # that answers "I cannot answer that" to everything.
+        raise FileNotFoundError(f"Data directory not found: {data_dir}")
     docs = []
     for path in sorted(data_dir.glob("*.md")):
-        docs.append(Document(doc_id=path.stem, path=path, text=path.read_text()))
+        docs.append(Document(doc_id=path.stem, path=path,
+                            text=path.read_text(encoding="utf-8")))
     return docs
 
 

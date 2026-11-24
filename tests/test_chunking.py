@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from agent_graph_rag.chunking import chunk_document, load_chunks, load_documents
+import pytest
+
+from agent_graph_rag.chunking import (
+    chunk_document,
+    load_chunks,
+    load_documents,
+)
 
 DATA = Path(__file__).parent.parent / "src" / "agent_graph_rag" / "data"
 
@@ -44,3 +50,24 @@ def test_chunk_provenance_kwargs():
     assert kwargs["doc_id"] == chunk.doc_id
     assert kwargs["chunk_id"] == chunk.chunk_id
     assert kwargs["page"] == chunk.page
+
+
+def test_page_zero_marker_rejected():
+    # Page 0 would stamp provenance Pydantic refuses (page >= 1); reject
+    # it here with a clear error instead of a ValidationError at extraction.
+    with pytest.raises(ValueError, match="below 1"):
+        chunk_document("doc", "--- Page 0 ---\nbody")
+
+
+def test_duplicate_page_marker_rejected():
+    # Two "Page 1" chunks would share the chunk id "doc:p1" and make
+    # provenance ambiguous.
+    with pytest.raises(ValueError, match="repeats a page"):
+        chunk_document("doc", "--- Page 1 ---\none\n--- Page 1 ---\ntwo")
+
+
+def test_load_documents_missing_dir_raises(tmp_path):
+    # A typo'd data dir must fail loudly, not build an empty graph that
+    # answers "I cannot answer that" to everything.
+    with pytest.raises(FileNotFoundError):
+        load_documents(tmp_path / "no-such-dir")

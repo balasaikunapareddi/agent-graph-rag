@@ -41,6 +41,23 @@ def test_baseline_can_answer_single_chunk_fact():
     assert "12.4" in answer.text
 
 
+def test_baseline_multi_intent_answer_is_partial():
+    # Q2 asks catalyst AND yield; the returned text holds only the
+    # catalyst fact, so complete must be False even though that fact
+    # is in the top chunk.
+    rag = PlainChunkRAG(CHUNKS)
+    answer = rag.answer(DEMO_QUESTIONS[1]["question"])
+    assert not answer.complete
+
+
+def test_baseline_ranking_answer_is_partial():
+    # Q3 asks for the LOWEST IC50 plus the producing reaction — a ranking
+    # over all compounds, which one chunk can never settle.
+    rag = PlainChunkRAG(CHUNKS)
+    answer = rag.answer(DEMO_QUESTIONS[2]["question"])
+    assert not answer.complete
+
+
 def test_baseline_reports_retrieved_chunks():
     rag = PlainChunkRAG(CHUNKS)
     answer = rag.answer("What catalyst was used in reaction R-22?")

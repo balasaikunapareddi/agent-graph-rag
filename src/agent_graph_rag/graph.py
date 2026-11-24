@@ -174,15 +174,25 @@ class KnowledgeGraph:
             frontier = nxt
         return paths
 
-    def property_of(self, compound: str, kind: str) -> dict | None:
-        """The Property node of ``kind`` linked from ``compound``, if any."""
+    def property_of(self, compound: str, kind: str,
+                    target: str | None = None) -> dict | None:
+        """The Property node of ``kind`` linked from ``compound``, if any.
+
+        ``target`` narrows IC50-style properties to one enzyme: a compound
+        tested against several enzymes has one IC50 node per enzyme, and
+        returning the first one regardless of target answers with the
+        wrong enzyme's value.
+        """
         if not self.graph.has_node(compound):
             return None
-        for target, rel in self.neighbors(compound, RelationshipType.HAS_PROPERTY):
-            attrs = self.graph.nodes[target].get("attributes", {})
-            if attrs.get("kind") == kind:
-                return {"name": target, **attrs,
-                        "provenance": self.graph.nodes[target]["provenance"]}
+        for target_node, rel in self.neighbors(compound, RelationshipType.HAS_PROPERTY):
+            attrs = self.graph.nodes[target_node].get("attributes", {})
+            if attrs.get("kind") != kind:
+                continue
+            if target is not None and attrs.get("target") != target:
+                continue
+            return {"name": target_node, **attrs,
+                    "provenance": self.graph.nodes[target_node]["provenance"]}
         return None
 
     def compounds_tested_against(self, enzyme: str) -> list[dict]:
@@ -190,7 +200,7 @@ class KnowledgeGraph:
         for compound in self.entities_by_type(EntityType.COMPOUND):
             for target, rel in self.neighbors(compound, RelationshipType.TESTED_AGAINST):
                 if target == enzyme:
-                    ic50 = self.property_of(compound, "IC50")
+                    ic50 = self.property_of(compound, "IC50", target=enzyme)
                     out.append({"compound": compound,
                                 "ic50_nM": (ic50 or {}).get("value"),
                                 "ic50_target": (ic50 or {}).get("target")})

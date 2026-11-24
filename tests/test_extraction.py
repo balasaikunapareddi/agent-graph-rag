@@ -1,9 +1,14 @@
 """Extraction tests: stub extractor + LLM payload validation (no network)."""
 
+import sys
+import types
 from pathlib import Path
+
+import pytest
 
 from agent_graph_rag.chunking import Chunk, load_chunks
 from agent_graph_rag.extractor import (
+    LLMExtractor,
     StubExtractor,
     _strip_fences,
     _validate_llm_payload,
@@ -40,6 +45,108 @@ def test_stub_extracts_property_with_value_and_unit():
     props = {e.name: e for e in ext.entities if e.type == EntityType.PROPERTY}
     assert props["solubility:AZT-101"].attributes["value"] == "12.4"
     assert props["melting_point:AZT-101"].attributes["unit"] == "°C"
+
+
+def test_stub_logp_value_has_no_trailing_period():
+    # "The logP of AZT-101 was 2.1." — the number regex must not swallow
+    # the sentence's full stop into the stored value ("2.1.").
+    ext = EXT.extract(_chunk("The logP of AZT-101 was 2.1."))
+    props = {e.name: e for e in ext.entities if e.type == EntityType.PROPERTY}
+    assert props["logP:AZT-101"].attributes["value"] == "2.1"
+
+
+def test_stub_provenance_span_is_the_matched_fact():
+    # Every entity's text_span must be the sentence it came from, not the
+    # chunk's first line (melting point / logP used to cite solubility).
+    ext = EXT.extract(_chunk("The solubility of AZT-101 was 12.4 mg/mL. "
+                             "The melting point of AZT-101 was 184 °C. "
+                             "The logP of AZT-101 was 2.1."))
+    spans = {e.name: e.provenance.text_span for e in ext.entities}
+    assert "solubility" in spans["solubility:AZT-101"]
+    assert "melting point" in spans["melting_point:AZT-101"]
+    assert "logP" in spans["logP:AZT-101"]
+
+
+def _fake_litellm(monkeypatch, behaviours):
+    """Stand-in litellm module: each call raises or returns per behaviour."""
+    calls = {"n": 0, "kwargs": []}
+
+    class _Msg:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Msg(content)
+
+    class _Resp:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+
+    def completion(model, messages, timeout=None):
+        calls["n"] += 1
+        calls["kwargs"].append({"model": model, "timeout": timeout})
+        behaviour = behaviours[min(calls["n"] - 1, len(behaviours) - 1)]
+        if isinstance(behaviour, Exception):
+            raise behaviour
+        return _Resp(behaviour)
+
+    module = types.ModuleType("litellm")
+    module.completion = completion
+    monkeypatch.setitem(sys.modules, "litellm", module)
+    return calls
+
+
+def _api_error(message, status_code):
+    err = RuntimeError(message)
+    err.status_code = status_code
+    return err
+
+
+_VALID_JSON = ('{"entities": ['
+               '{"name": "R-14", "type": "Reaction", "attributes": {}}, '
+               '{"name": "AZT-101", "type": "Compound", "attributes": {}}], '
+               '"relationships": [{"source": "R-14", "target": "AZT-101", '
+               '"type": "PRODUCES"}]}')
+
+
+def test_llm_extractor_retries_transient_503_once(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+    calls = _fake_litellm(monkeypatch, [
+        _api_error("503 Service Unavailable", 503), _VALID_JSON])
+    ext = LLMExtractor(model="fake/model", retry_delay=20).extract(
+        _chunk("Reaction R-14 produced compound AZT-101."))
+    assert calls["n"] == 2
+    assert sleeps == [20]
+    assert calls["kwargs"][0]["timeout"] == 120
+    assert {e.name for e in ext.entities} == {"R-14", "AZT-101"}
+
+
+def test_llm_extractor_does_not_retry_auth_error(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+    calls = _fake_litellm(monkeypatch, [_api_error("401 Unauthorized", 401)])
+    with pytest.raises(ValueError, match="API call failed"):
+        LLMExtractor(model="fake/model").extract(_chunk("x"))
+    assert calls["n"] == 1
+    assert sleeps == []
+
+
+def test_llm_extractor_retries_malformed_json_then_succeeds(monkeypatch):
+    calls = _fake_litellm(
+        monkeypatch, ["not json at all",
+                      '{"entities": [], "relationships": []}'])
+    ext = LLMExtractor(model="fake/model").extract(_chunk("x"))
+    assert calls["n"] == 2
+    assert ext.entities == [] and ext.relationships == []
+
+
+def test_llm_extractor_malformed_json_twice_raises(monkeypatch):
+    calls = _fake_litellm(monkeypatch, ["garbage", "still garbage"])
+    with pytest.raises(ValueError, match="failed to validate"):
+        LLMExtractor(model="fake/model").extract(_chunk("x"))
+    assert calls["n"] == 2
 
 
 def test_stub_extracts_assay_and_ic50_property():

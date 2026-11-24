@@ -119,6 +119,25 @@ def test_compounds_tested_against_ranks():
         g.compounds_tested_against("NoSuchEnzyme") == []
 
 
+def test_property_of_filters_ic50_by_target():
+    # BRX-207 has two IC50s (42 nM vs Kinase-7, 1850 nM vs Phosphatase-2);
+    # asking for one enzyme must not return the other's value.
+    g = _graph()
+    assert g.property_of("BRX-207", "IC50",
+                         target="Phosphatase-2")["value"] == "1850"
+    assert g.property_of("BRX-207", "IC50",
+                         target="Kinase-7")["value"] == "42"
+    assert g.property_of("BRX-207", "IC50",
+                         target="NoSuchEnzyme") is None
+
+
+def test_compounds_tested_against_phosphatase():
+    g = _graph()
+    assert g.compounds_tested_against("Phosphatase-2") == [
+        {"compound": "BRX-207", "ic50_nM": "1850",
+         "ic50_target": "Phosphatase-2"}]
+
+
 def test_path_provenance_points_at_real_chunks():
     g = _graph()
     paths = g.find_paths("R-31", "melting_point:CLT-558")

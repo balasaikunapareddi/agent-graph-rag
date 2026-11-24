@@ -4,7 +4,7 @@ Run with the stored key (never printed or logged) via:
     python3 ~/workspace/custom-connectors/custom.gemini/bin/run_live.py \\
         <repo-dir> <venv-python> scripts/live_test.py
 
-Extracts entities/relationships from two lab notes with the LLM, builds
+Extracts entities/relationships from all five lab notes with the LLM, builds
 the graph, and answers three multi-hop questions. Prints per-question
 PASS/FAIL and overall accuracy. Exit code 0 only if extraction produced
 a usable graph AND at least 2 of 3 questions are answered correctly.

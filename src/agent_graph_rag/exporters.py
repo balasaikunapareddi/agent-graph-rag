@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 
 from .graph import KnowledgeGraph
@@ -50,7 +51,22 @@ def _cypher_label(type_name: str) -> str:
 
 
 def _cypher_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+    return (value.replace("\\", "\\\\").replace("'", "\\'")
+                 .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
+
+
+_CYPHER_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _cypher_key(key: str) -> str:
+    """A property key, backtick-quoted unless it is a plain identifier.
+
+    LLM-extracted attribute keys can contain spaces ("melting point");
+    unquoted they produce invalid Cypher.
+    """
+    if _CYPHER_KEY_RE.fullmatch(key):
+        return key
+    return "`" + key.replace("`", "``") + "`"
 
 
 def export_cypher(graph: KnowledgeGraph) -> str:
@@ -59,9 +75,12 @@ def export_cypher(graph: KnowledgeGraph) -> str:
     for name, data in sorted(graph.graph.nodes(data=True)):
         label = _cypher_label(data.get("type", "Entity"))
         attrs = dict(data.get("attributes", {}))
-        props = {"name": name, **attrs}
+        # The node's name wins: an attribute literally called "name" must
+        # not overwrite the node's identity in the exported statement.
+        props = {"name": name,
+                 **{k: v for k, v in attrs.items() if k != "name"}}
         props_str = ", ".join(
-            f"{k}: '{_cypher_escape(str(v))}'" for k, v in props.items())
+            f"{_cypher_key(k)}: '{_cypher_escape(str(v))}'" for k, v in props.items())
         lines.append(f"CREATE (:{label} {{{props_str}}});")
     for src, tgt, data in sorted(graph.graph.edges(data=True)):
         for rel_type in data.get("types", []):
